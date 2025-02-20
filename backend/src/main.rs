@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ws::{WebSocket, WebSocketUpgrade}, Query},
+    extract::{ws::{Message,WebSocket, WebSocketUpgrade}, Query},
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -8,6 +8,9 @@ use axum::{
 use std::{env, net::SocketAddr};
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
+use rand::{Rng, SeedableRng};
+use rand::rngs::SmallRng;
+use tokio::time::{sleep, Duration};
 use dotenv::dotenv;
 
 #[derive(Deserialize)]
@@ -47,17 +50,29 @@ async fn websocket_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
     })
 }
 
+
+
 async fn handle_socket(mut socket: WebSocket) {
     println!("Client connected to WebSocket");
 
-    while let Some(Ok(msg)) = socket.recv().await {
-        if let axum::extract::ws::Message::Text(text) = msg {
-            println!("Received message: {}", text);
-        }
-    }
+    let mut rng = SmallRng::from_entropy(); // Use SmallRng instead of thread_rng
 
-    println!("Client disconnected");
+    loop {
+        let aqi_value = rng.gen_range(50..150); // Generate random AQI between 50-150
+        let json_data = format!(r#"{{"aqi": {}, "status": "{}"}}"#, aqi_value, "Updated");
+
+        if socket.send(Message::Text(json_data)).await.is_err() {
+            println!("Client disconnected, stopping updates.");
+            break;
+        }
+
+        println!("Sent AQI update: {}", aqi_value);
+        sleep(Duration::from_secs(5)).await; // Send updates every 5 seconds
+    }
 }
+
+
+
 
 // HTTP Route for AQI
 async fn get_aqi(Query(params): Query<AQIRequest>) -> Json<AQIResponse> {

@@ -1,80 +1,106 @@
 use axum::{
-    extract::{ws::{Message,WebSocket, WebSocketUpgrade}, Query},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Query,
+    },
     response::IntoResponse,
     routing::get,
     Json, Router,
 };
-// use tokio::sync::broadcast;
-use std::{env, net::SocketAddr};
-use serde::{Deserialize, Serialize};
-use reqwest::Client;
-use rand::{Rng, SeedableRng};
-use rand::rngs::SmallRng;
-use tokio::time::{sleep, Duration};
 use dotenv::dotenv;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::{env, net::SocketAddr};
+use tokio::time::{sleep, Duration};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct AQIRequest {
     city: String,
     state: String,
     country: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct AQIResponse {
     status: String,
     data: Option<AQIResult>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct AQIResult {
     current: Option<AQIInfo>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct AQIInfo {
-    pollution: AQIData,
+    pollution: Option<AQIData>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct AQIData {
     ts: String,
-    aqius: i32,  // AQI value (US Standard)
+    aqius: i32, // AQI value (US Standard)
 }
 
-// WebSocket handler
-async fn websocket_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(|socket| async move {
-        println!("WebSocket client connected!");
-        handle_socket(socket).await;
-    })
+// WebSocket handler with dynamic location support
+async fn websocket_handler(ws: WebSocketUpgrade, Query(params): Query<AQIRequest>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, params))
 }
 
+async fn handle_socket(mut socket: WebSocket, params: AQIRequest) {
+    println!("WebSocket client connected!");
 
+    let api_key = match env::var("API_KEY") {
+        Ok(key) => key,
+        Err(_) => {
+            eprintln!("API key is missing!");
+            return;
+        }
+    };
 
-async fn handle_socket(mut socket: WebSocket) {
-    println!("Client connected to WebSocket");
-
-    let mut rng = SmallRng::from_entropy(); // Use SmallRng instead of thread_rng
+    let client = Client::new();
 
     loop {
-        let aqi_value = rng.gen_range(50..150); // Generate random AQI between 50-150
-        let json_data = format!(r#"{{"aqi": {}, "status": "{}"}}"#, aqi_value, "Updated");
+        let url = format!(
+            "http://api.airvisual.com/v2/city?city={}&state={}&country={}&key={}",
+            params.city, params.state, params.country, api_key
+        );
 
-        if socket.send(Message::Text(json_data)).await.is_err() {
-            println!("Client disconnected, stopping updates.");
-            break;
+        match client.get(&url).send().await {
+            Ok(response) => {
+                if let Ok(aqi_data) = response.json::<AQIResponse>().await {
+                    if let Some(data) = aqi_data.data {
+                        if let Some(current) = data.current {
+                            if let Some(pollution) = current.pollution {
+                                let json_data = serde_json::to_string(&pollution).unwrap();
+                                
+                                if socket.send(Message::Text(json_data)).await.is_err() {
+                                    println!("Client disconnected");
+                                    break;
+                                }
+                            } else {
+                                println!("No pollution data available.");
+                            }
+                        } else {
+                            println!("No current AQI data available.");
+                        }
+                    } else {
+                        println!("Invalid AQI data format.");
+                    }
+                } else {
+                    println!("Failed to parse AQI API response.");
+                }
+            }
+            Err(err) => {
+                eprintln!("Failed to fetch AQI data: {:?}", err);
+            }
         }
 
-        println!("Sent AQI update: {}", aqi_value);
         sleep(Duration::from_secs(5)).await; // Send updates every 5 seconds
     }
 }
 
-
-
-
-// HTTP Route for AQI
+// HTTP Route for one-time AQI fetching
 async fn get_aqi(Query(params): Query<AQIRequest>) -> Json<AQIResponse> {
     let api_key = env::var("API_KEY").expect("API key not set");
     let url = format!(
@@ -90,10 +116,16 @@ async fn get_aqi(Query(params): Query<AQIRequest>) -> Json<AQIResponse> {
             if let Ok(data) = resp.json::<AQIResponse>().await {
                 Json(data)
             } else {
-                Json(AQIResponse { status: "error".to_string(), data: None })
+                Json(AQIResponse {
+                    status: "error".to_string(),
+                    data: None,
+                })
             }
         }
-        Err(_) => Json(AQIResponse { status: "error".to_string(), data: None }),
+        Err(_) => Json(AQIResponse {
+            status: "error".to_string(),
+            data: None,
+        }),
     }
 }
 
@@ -103,7 +135,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/aqi", get(get_aqi))
-        .route("/ws", get(websocket_handler));
+        .route("/ws", get(websocket_handler)); // WebSocket route
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     println!("Listening on {}", addr);

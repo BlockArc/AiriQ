@@ -2,22 +2,25 @@
 import { useEffect, useState } from "react";
 
 export type AQIData = {
-  aqi: number;
-  status: string;
+  ts: string;
+  aqius: number;
 };
 
-export default function useWebSocket(url: string) {
+export default function useWebSocket(city: string, state: string, country: string, connect: boolean) {
   const [aqiData, setAqiData] = useState<AQIData | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
+    if (!connect || !city || !state || !country) return; // Only connect when button is pressed
+
+    const url = `ws://127.0.0.1:3000/ws?city=${city}&state=${state}&country=${country}`;
     const socket = new WebSocket(url);
+    setWs(socket);
 
     socket.onopen = () => {
       console.log("Connected to WebSocket");
       setIsConnected(true);
-      setWs(socket);
     };
 
     socket.onmessage = (event) => {
@@ -29,25 +32,14 @@ export default function useWebSocket(url: string) {
       }
     };
 
-    socket.onerror = (error) => {
-      console.error("WebSocket Error:", error);
-    };
-
     socket.onclose = () => {
       console.log("WebSocket Disconnected");
       setIsConnected(false);
       setWs(null);
-      // Reconnect after 3 seconds if disconnected
-      setTimeout(() => {
-        console.log("Reconnecting WebSocket...");
-        setWs(new WebSocket(url));
-      }, 3000);
     };
 
-    return () => {
-      socket.close();
-    };
-  }, [url]);
+    return () => socket.close();
+  }, [connect, city, state, country]);
 
   return { aqiData, isConnected };
 }
